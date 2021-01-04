@@ -26,6 +26,7 @@ impl Direction {
 const NODE_SIZE: f32 = 20.0;
 const PLAY_AREA_WIDTH: f32 = 13.0 * NODE_SIZE;
 const PLAY_AREA_HEIGHT: f32 = 13.0 * NODE_SIZE;
+const BASE_GAMETICK_DURACTION: f32 = 0.5;
 
 fn position(x: i32, y: i32) -> Vec3 {
     Vec3::new(x as f32 * NODE_SIZE, y as f32 * NODE_SIZE, 0.0)
@@ -41,13 +42,15 @@ struct Apple;
 struct GameTick(Timer);
 struct Scoreboard(i32);
 struct DirectionController {
-    direction: Direction
+    direction: Direction,
+    can_change_direction: bool
 }
 
 impl DirectionController {
-    fn new(direction: Direction) -> Self {
+    fn new(direction: Direction, can_change_direction: bool) -> Self {
         Self {
             direction,
+            can_change_direction
         }
     }
 }
@@ -70,7 +73,7 @@ fn add_snake(commands: &mut Commands, mut materials: ResMut<Assets<ColorMaterial
         })
         .with(SnakeHead::default())
         .with(Transform::from_translation(head_position))
-        .with(DirectionController::new(Direction::RIGHT));
+        .with(DirectionController::new(Direction::RIGHT, true));
 }
 
 fn apple_spawner_system(
@@ -117,6 +120,10 @@ fn snake_controls_system(
     mut query: Query<&mut DirectionController, With<SnakeHead>>
 ) {
     for mut controller in query.iter_mut() {
+        if !controller.can_change_direction {
+            return;
+        }
+
         let dir: Direction = if keyboard_input.pressed(KeyCode::Left) {
             Direction::LEFT
         } else if keyboard_input.pressed(KeyCode::Down) {
@@ -128,8 +135,9 @@ fn snake_controls_system(
         } else {
             controller.direction
         };
-        
-        if dir != controller.direction.opposite() {
+
+        if dir != controller.direction && dir != controller.direction.opposite() {
+            controller.can_change_direction = false;
             controller.direction = dir;
         }
     }
@@ -145,7 +153,7 @@ fn snake_head_movement_system(
         return;
     }
     
-    for (mut transform, direction_controller) in query.iter_mut() {
+    for (mut transform, mut direction_controller) in query.iter_mut() {
         let mut new_translation = transform.translation.clone();
         let direction = direction_controller.direction;
 
@@ -156,7 +164,24 @@ fn snake_head_movement_system(
             Direction::LEFT => new_translation.x -= NODE_SIZE,
         }
 
+        if new_translation.y > PLAY_AREA_HEIGHT / 2.0 {
+            new_translation.y = -PLAY_AREA_HEIGHT / 2.0 + NODE_SIZE / 2.0
+        }
+
+        if new_translation.y < -PLAY_AREA_HEIGHT / 2.0 {
+            new_translation.y = PLAY_AREA_HEIGHT / 2.0 - NODE_SIZE / 2.0
+        }
+
+        if new_translation.x > PLAY_AREA_WIDTH / 2.0 {
+            new_translation.x = -PLAY_AREA_WIDTH / 2.0 + NODE_SIZE / 2.0
+        }
+
+        if new_translation.x < -PLAY_AREA_WIDTH / 2.0 {
+            new_translation.x = PLAY_AREA_WIDTH / 2.0 - NODE_SIZE / 2.0
+        }
+
         transform.translation = new_translation;
+        direction_controller.can_change_direction = true;
         println!("Snake at x={} y={}", transform.translation.x, transform.translation.y);
     }
 }
@@ -190,8 +215,18 @@ fn apple_eating_system(
     }
 }
 
-fn timer_tick_system(time: Res<Time>, mut timer: ResMut<GameTick>) {
+fn timer_tick_system(
+    score: Res<Scoreboard>,
+    time: Res<Time>, 
+    mut timer: ResMut<GameTick>
+) {
+    timer.0.set_duration(f32::max(BASE_GAMETICK_DURACTION - (score.0 as f32 * 0.005), 0.125));
     timer.0.tick(time.delta_seconds());
+
+    if timer.0.just_finished() {
+        println!("Game tick at {}", timer.0.duration());
+        return;
+    }
 }
 
 fn add_scoreboard(
@@ -241,7 +276,7 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugin(DebugPlugin)
         .add_resource(Scoreboard(0))
-        .add_resource(GameTick(Timer::from_seconds(0.5, true)))
+        .add_resource(GameTick(Timer::from_seconds(BASE_GAMETICK_DURACTION, true)))
         .add_startup_system(camera_spawn_system.system())
         .add_startup_system(add_scoreboard.system())
         .add_startup_system(add_snake.system())
