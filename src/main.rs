@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use rand::{thread_rng, Rng};
 
 mod plugins;
 use crate:: plugins::*;
@@ -23,22 +24,33 @@ impl Direction {
 }
 
 const NODE_SIZE: f32 = 20.0;
+const PLAY_AREA_WIDTH: f32 = 13.0 * NODE_SIZE;
+const PLAY_AREA_HEIGHT: f32 = 13.0 * NODE_SIZE;
 
-fn position(pos: f32) -> f32 {
-    pos * NODE_SIZE
+fn position(x: i32, y: i32) -> Vec3 {
+    Vec3::new(x as f32 * NODE_SIZE, y as f32 * NODE_SIZE, 0.0)
 }
 
+#[derive(Default)]
+struct SnakeSegment(Vec<Entity>);
+
+#[derive(Default)]
 struct SnakeHead();
 
-impl SnakeHead {
-    fn new() -> Self {
-        Self {}
-    }
+struct Apple;
+struct GameTick(Timer);
+struct Scoreboard(i32);
+struct DirectionController {
+    direction: Direction
 }
 
-struct Apple;
-struct SnakeTick(Timer);
-struct DirectionController(Direction);
+impl DirectionController {
+    fn new(direction: Direction) -> Self {
+        Self {
+            direction,
+        }
+    }
+}
 
 fn camera_spawn_system(commands: &mut Commands) {
     commands
@@ -48,11 +60,7 @@ fn camera_spawn_system(commands: &mut Commands) {
 
 fn add_snake(commands: &mut Commands, mut materials: ResMut<Assets<ColorMaterial>>) {
     println!("Spawning snake...");
-    let head_position: Vec3 = Vec3::new(
-        position(5.0),
-        position(5.0),
-        0.0
-    );
+    let head_position: Vec3 = position(0, 0);
 
     commands
         .spawn(SpriteBundle {
@@ -60,27 +68,40 @@ fn add_snake(commands: &mut Commands, mut materials: ResMut<Assets<ColorMaterial
             sprite: Sprite::new(Vec2::new(NODE_SIZE, NODE_SIZE)),
             ..Default::default()
         })
-        .with(SnakeHead::new())
+        .with(SnakeHead::default())
         .with(Transform::from_translation(head_position))
-        .with(DirectionController(Direction::RIGHT));
+        .with(DirectionController::new(Direction::RIGHT));
 }
 
 fn apple_spawner_system(
     commands: &mut Commands,
+    timer: Res<GameTick>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     query: Query<&Transform, With<Apple>>
 ) {
+    if !timer.0.just_finished() {
+        return;
+    }
+
     let number_of_apples = query.iter().count();
     
     if  number_of_apples > 0 {
         return;
     }
 
-    println!("Spawning apple...");
+    let mut rng = thread_rng();
+
+    let x = rng.gen_range(-0.5..0.5) * PLAY_AREA_WIDTH;
+    let y = rng.gen_range(-0.5..0.5) * PLAY_AREA_HEIGHT;
+    
+    let x = x - (x % NODE_SIZE);
+    let y = y - (y % NODE_SIZE);
+
+    println!("Spawning apple at x={} y={}", &x, &y);
     let next_position = Vec3::new(
-        position(2.0), 
-        position(2.0), 
-        position(2.0)
+        x,
+        y,
+        0.0
     );
     commands.spawn(SpriteBundle {
         material: materials.add(ColorMaterial::color(Color::RED)),
@@ -105,29 +126,28 @@ fn snake_controls_system(
         } else if keyboard_input.pressed(KeyCode::Right) {
             Direction::RIGHT
         } else {
-            controller.0
+            controller.direction
         };
         
-        if dir != controller.0.opposite() {
-            controller.0 = dir;
+        if dir != controller.direction.opposite() {
+            controller.direction = dir;
         }
     }
 
 }
 
 fn snake_head_movement_system(
-    time: Res<Time>,
-    mut timer: ResMut<SnakeTick>,
+    timer: Res<GameTick>,
     mut query: Query<(&mut Transform, &mut DirectionController), With<SnakeHead>>
 ) {
     
-    if !timer.0.tick(time.delta_seconds()).just_finished() {
+    if !timer.0.just_finished() {
         return;
     }
     
     for (mut transform, direction_controller) in query.iter_mut() {
         let mut new_translation = transform.translation.clone();
-        let direction =direction_controller.0;
+        let direction = direction_controller.direction;
 
         match direction {
             Direction::UP => new_translation.y += NODE_SIZE,
@@ -141,29 +161,28 @@ fn snake_head_movement_system(
     }
 }
 
-fn direction_to_vec3(direction: Direction) -> Vec3 {
-    match direction {
-        Direction::UP => Vec3::new(0.0, position(1.0), 0.0),
-        Direction::RIGHT => Vec3::new(position(1.0), 0.0, 0.0),
-        Direction::DOWN => Vec3::new(0.0, position(-1.0), 0.0),
-        Direction::LEFT => Vec3::new(position(-1.0), 0.0, 0.0),
-    }
-}
-
 fn apple_eating_system(
     commands: &mut Commands,
-    snake_query: Query<(&Transform, &DirectionController), With<SnakeHead>>,
+    mut score: ResMut<Scoreboard>,
+    timer: Res<GameTick>,
+    snake_query: Query<&Transform, With<SnakeHead>>,
     apple_query: Query<(Entity, &Transform), With<Apple>>
 ) {
-    for (apple_entity, apple_transform) in apple_query.iter() {
-        for (snake_head_transform, direction_controller) in snake_query.iter() {
-            let direction = direction_controller.0;
-            let direction_offset = direction_to_vec3(direction);
-            let x_difference = snake_head_transform.translation.x + direction_offset.x - apple_transform.translation.x;
-            let y_difference = snake_head_transform.translation.y + direction_offset.y - apple_transform.translation.y;
+    if !timer.0.just_finished() {
+        return;
+    }
 
-            if x_difference + y_difference == 0.0 {
+    for (apple_entity, apple_transform) in apple_query.iter() {
+        for snake_head_transform in snake_query.iter() {
+            let same_x = snake_head_transform.translation.x == apple_transform.translation.x;
+            let same_y = snake_head_transform.translation.y == apple_transform.translation.y;
+
+            if same_x && same_y {
+                println!("Ate apple at x={} y={}", &apple_transform.translation.x, &apple_transform.translation.y);
                 commands.despawn(apple_entity);
+
+                score.0 += 1;
+                println!("Score: {}", &score.0);
                 // TODO: grow snake
                 // TODO: increase score
             }
@@ -171,13 +190,63 @@ fn apple_eating_system(
     }
 }
 
+fn timer_tick_system(time: Res<Time>, mut timer: ResMut<GameTick>) {
+    timer.0.tick(time.delta_seconds());
+}
+
+fn add_scoreboard(
+    commands: &mut Commands,
+    asset_server: Res<AssetServer>
+) {
+    commands.spawn(TextBundle {
+        text: Text {
+            font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+            value: format!("Score: "),
+            style: TextStyle {
+                color: Color::rgb(0.5, 0.8, 0.5),
+                font_size: 20.0,
+                ..Default::default()
+            },
+        },
+        style: Style {
+            position_type: PositionType::Relative,
+            position: Rect {
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+}
+
+fn scoreboard_system(
+    score: Res<Scoreboard>,
+    mut query: Query<&mut Text>
+) {
+    for mut text in query.iter_mut() {
+        text.value = format!("Score: {}", score.0);
+    }
+}
+
 fn main() {
     App::build()
+        .add_resource(WindowDescriptor {
+            title: "Snake!".to_string(),
+            width: PLAY_AREA_WIDTH,
+            height: PLAY_AREA_HEIGHT,
+            ..Default::default()
+        })
         .add_plugins(DefaultPlugins)
         .add_plugin(DebugPlugin)
-        .add_resource(SnakeTick(Timer::from_seconds(0.5, true)))
-        .add_startup_system(add_snake.system())
+        .add_resource(Scoreboard(0))
+        .add_resource(GameTick(Timer::from_seconds(0.5, true)))
         .add_startup_system(camera_spawn_system.system())
+        .add_startup_system(add_scoreboard.system())
+        .add_startup_system(add_snake.system())
+        .add_system(timer_tick_system.system())
+        .add_system(scoreboard_system.system())
         .add_system(apple_spawner_system.system())
         .add_system(snake_controls_system.system())
         .add_system(snake_head_movement_system.system())
